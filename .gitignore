@@ -1,0 +1,23 @@
+#python and uv
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+#secrets and local settings
+.env
+.env.*
+!.env.example
+
+# Never commit real data: exports, spreadsheets, database dumps, and folders real data is stored
+*.csv
+*.xlsx
+*.xls
+*.dump
+*.pgdump
+*.sql.gz
+private/
+data/
+
