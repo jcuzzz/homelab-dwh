@@ -13,7 +13,7 @@ def _is_violation(path: str) -> bool:
         return True
     if name.startswith(".env") and name != ".env.example":
         return True
-    return any(part in BLOCKED_FOLDERS for part in parts[-1])
+    return any(part in BLOCKED_FOLDERS for part in parts[:-1])
 
 
 def find_violations(paths: list[str]) -> list[str]:
