@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from ingest.load import open_csv, read_csv
+from ingest.load import LoadError, open_csv, read_csv
 
 
 def test_reads_header_and_rows(tmp_path: Path) -> None:
@@ -42,5 +42,5 @@ def test_empty_file(tmp_path: Path) -> None:
     path = tmp_path / "empty.csv"
     path.write_text("", encoding="utf-8")
 
-    with open_csv(path) as f, pytest.raises(ValueError, match="empty"):
+    with open_csv(path) as f, pytest.raises(LoadError, match="empty"):
         read_csv(f)
