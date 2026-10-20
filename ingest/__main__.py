@@ -1,40 +1,42 @@
+import argparse
 import os
 import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
 
-from ingest.db import connect
-from ingest.load import open_csv, read_csv
+from ingest.db import connect, init_schema
+from ingest.load import load_file, table_name
 
 
 def _require_env(name: str) -> str:
     value = os.environ.get(name)
     if not value:
         sys.exit(f"{name} is not set")
-    else:
-        return value
+    return value
 
 
-def _summarise_csv(path: Path) -> None:
-    with open_csv(path) as f:
-        header, rows = read_csv(f)
-        count = sum(1 for _ in rows)
-    print(f"{len(header)} columns: {header}")
-    print(f"{count} rows")
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(prog="python -m ingest")
+    sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("init-db", help="create the bronze schema (safe to repeat)")
+    load = sub.add_parser("load", help="append a CSV export to its bronze table")
+    load.add_argument("--source", required=True, help="source system prefix, e.g. cases")
+    load.add_argument("target", type=Path, help="the CSV file to load")
+    return parser.parse_args()
 
 
 def main() -> None:
-    if len(sys.argv) > 1:
-        _summarise_csv(Path(sys.argv[1]))
-        return
+    args = _parse_args()
     load_dotenv()
-    url = _require_env("DATABASE_URL")
-    with connect(url) as conn:
-        row = conn.execute("select version()").fetchone()
-        if row is None:
-            sys.exit("query returned no results from target")
-        print(row[0])
+    with connect(_require_env("DATABASE_URL")) as conn:
+        if args.command == "init-db":
+            init_schema(conn)
+            print("bronze schema ready")
+            return
+        rows = load_file(conn, args.target, args.source)
+        table = table_name(args.source, args.target)
+        print(f"loaded {args.target.name} -> bronze.{table} ({rows} rows)")
 
 
 if __name__ == "__main__":
