@@ -15,7 +15,7 @@ def conn() -> Iterator[Connection]:
     url = os.environ.get("TEST_DATABASE_URL")
     if not url:
         pytest.skip("TEST_DATABASE_URL not set")
-    with psycopg.connnect(url, autocommit=True) as c:
+    with psycopg.connect(url, autocommit=True) as c:
         if not c.info.dbname.endswith("_test"):
             pytest.fail(f"refusing to rest non-test database {c.info.dbname!r}")
         c.execute("drop schema if exists bronze cascade")

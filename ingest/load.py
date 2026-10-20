@@ -4,6 +4,8 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import TextIO
 
+from psycopg import sql
+
 from ingest.db import Connection
 
 BRONZE = "bronze"
@@ -79,7 +81,7 @@ def copy_rows(conn: Connection, table: str, columns: list[str], rows: Iterator[l
         sql.SQL(", ").join(sql.Identifier(c) for c in columns),
     )
     count = 0
-    with conn.cursor() as cur, cur.copy(stmt) as copy:
+    with conn.cursor() as cur, cur.copy(stmp) as copy:
         for row in rows:
             copy.write_row(row)
             count += 1
@@ -93,4 +95,5 @@ def load_file(conn: Connection, path: Path, source: str) -> int:
     with open_csv(path) as f:
         header, rows = read_csv(f)
         columns = normalise_columns(header)
+        ensure_table(conn, table, columns)
         return copy_rows(conn, table, columns, rows)
