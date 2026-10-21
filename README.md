@@ -63,7 +63,6 @@ dumps are git-ignored, and `tools/check_no_real_data.py` fails the build if one 
 
 ## In progress
 
-- [ ] All-or-nothing loads with per-file results
 - [ ] Archive source files and skip unchanged re-exports
 - [ ] Reject exports whose columns changed (schema drift)
 - [ ] Encoding option and error output free of row values
