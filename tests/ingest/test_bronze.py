@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from ingest.db import Connection, init_schema
-from ingest.load import LoadError, load_file
+from ingest.load import LoadError, load_file, load_path
 
 STUDENTS = "Student Key,Surname,Year Level\nS001,Avery,07\nS002,Brook,\n"
 
@@ -90,3 +90,33 @@ def test_setup_sql_can_run_twice(conn: Connection) -> None:
     init_schema(conn)
 
     assert scalar(conn, "select count(*) from bronze.load_log") == 0
+
+
+def test_ragged_row_rolls_back_whole_file(conn: Connection, tmp_path: Path) -> None:
+    src = write(tmp_path / "Student.csv", STUDENTS + "S003,Cove\n")
+
+    with pytest.raises(LoadError, match="line 4: expected 3 fields, found 2"):
+        load_file(conn, src, "cases")
+
+    assert scalar(conn, "select count(*) from bronze.load_log") == 0
+    assert scalar(conn, "select to_regclass('bronze.cases__student') is null") is True
+
+
+def test_blank_lines_are_ignored(conn: Connection, tmp_path: Path) -> None:
+    src = write(tmp_path / "Students.csv", STUDENTS + "\n")
+
+    assert load_file(conn, src, "cases").rows == 2
+
+
+def test_folder_load_continues_past_a_bad_file(conn: Connection, tmp_path: Path) -> None:
+    share = tmp_path / "share"
+    write(share / "Bad.csv", "A,B\n1\n")
+    write(share / "Student.csv", STUDENTS)
+    write(share / "notes.txt", "ignored")
+
+    results = load_path(conn, share, "cases")
+
+    assert [(r.file.name, r.status) for r in results] == [
+        ("Bad.csv", "failed"),
+        ("Student.csv", "loaded"),
+    ]

@@ -8,7 +8,7 @@ Connection = psycopg.Connection[tuple[object, ...]]
 
 
 def connect(url: str) -> psycopg.Connection:
-    return psycopg.connect(url)
+    return psycopg.connect(url, autocommit=True)
 
 
 def init_schema(conn: Connection) -> None:

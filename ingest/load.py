@@ -4,7 +4,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Protocol, TextIO
+from typing import Literal, Protocol, TextIO
 
 from psycopg import sql
 
@@ -32,8 +32,10 @@ class CsvReader(Protocol):
 class LoadResult:
     file: Path
     table: str
-    load_id: int
-    rows: int
+    status: Literal["loaded", "failed"]
+    load_id: int | None = None
+    rows: int = 0
+    error: str | None = None
 
 
 def open_csv(path: Path, encoding: str = "utf-8-sig") -> TextIO:
@@ -109,9 +111,16 @@ def copy_rows(
         sql.Identifier(BRONZE, table),
         sql.SQL(", ").join(sql.Identifier(c) for c in (*META_COLUMNS, *columns)),
     )
+    width = len(columns)
     count = 0
     with conn.cursor() as cur, cur.copy(stmt) as copy:
         for row in reader:
+            if not row:
+                continue
+            if len(row) != width:
+                raise LoadError(
+                    f"line {reader.line_num}: expected {width} fields, found {len(row)}"
+                )
             copy.write_row([load_id, reader.line_num, *row])
             count += 1
     return count
@@ -125,17 +134,34 @@ def load_file(conn: Connection, path: Path, source: str) -> LoadResult:
     with open_csv(path) as f:
         header, reader = read_csv(f)
         columns = normalise_columns(header)
-        ensure_table(conn, table, columns)
-        inserted = conn.execute(
-            "insert into bronze.load_log (source, table_name, source_file, source_modified_at)"
-            " values (%s, %s, %s, %s) returning load_id",
-            (source, table, str(path), modified_at),
-        ).fetchone()
-        if inserted is None:
-            raise LoadError("load log insert returned no id")
-        load_id = int(str(inserted[0]))
-        rows = copy_rows(conn, table, columns, reader, load_id)
-        conn.execute(
-            "update bronze.load_log set row_count = %s where load_id = %s", (rows, load_id)
-        )
-    return LoadResult(path, table, load_id, rows)
+        with conn.transaction():
+            ensure_table(conn, table, columns)
+            inserted = conn.execute(
+                "insert into bronze.load_log (source, table_name, source_file, source_modified_at)"
+                " values (%s, %s, %s, %s) returning load_id",
+                (source, table, str(path), modified_at),
+            ).fetchone()
+            if inserted is None:
+                raise LoadError("load log insert returned no id")
+            load_id = int(str(inserted[0]))
+            rows = copy_rows(conn, table, columns, reader, load_id)
+            conn.execute(
+                "update bronze.load_log set row_count = %s where load_id = %s", (rows, load_id)
+            )
+    return LoadResult(path, table, "loaded", load_id=load_id, rows=rows)
+
+
+def csv_files(target: Path) -> list[Path]:
+    if target.is_file():
+        return [target]
+    return sorted(p for p in target.iterdir() if p.is_file() and p.suffix.lower() == ".csv")
+
+
+def load_path(conn: Connection, target: Path, source: str) -> list[LoadResult]:
+    results: list[LoadResult] = []
+    for path in csv_files(target):
+        try:
+            results.append(load_file(conn, path, source))
+        except (LoadError, OSError) as exc:
+            results.append(LoadResult(path, "", "failed", error=str(exc)))
+    return results
