@@ -1,8 +1,10 @@
+import os
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
-from ingest.db import Connection
+from ingest.db import Connection, init_schema
 from ingest.load import LoadError, load_file
 
 STUDENTS = "Student Key,Surname,Year Level\nS001,Avery,07\nS002,Brook,\n"
@@ -23,9 +25,9 @@ def scalar(conn: Connection, query: str) -> object:
 def test_load_mirrors_csv_as_text(conn: Connection, tmp_path: Path) -> None:
     src = write(tmp_path / "Student.csv", STUDENTS)
 
-    rows = load_file(conn, src, "cases")
+    result = load_file(conn, src, "cases")
 
-    assert rows == 2
+    assert (result.table, result.rows) == ("cases__student", 2)
     stored = conn.execute(
         b"select student_key, surname, year_level from bronze.cases__student order by 1"
     ).fetchall()
@@ -52,3 +54,39 @@ def test_bad_source_name_is_rejected(conn: Connection, tmp_path: Path) -> None:
 
     with pytest.raises(LoadError, match="source"):
         load_file(conn, src, "Cases!")
+
+
+def test_rows_record_load_id_source_line(conn: Connection, tmp_path: Path) -> None:
+    src = write(tmp_path / "Student.csv", STUDENTS)
+
+    result = load_file(conn, src, "cases")
+
+    lineage = conn.execute(
+        b"select _load_id, _source_line from bronze.cases__student order by 2"
+    ).fetchall()
+    assert lineage == [(result.load_id, 2), (result.load_id, 3)]
+    assert scalar(conn, "select row_count from bronze.load_log") == 2
+
+
+def test_export_time_is_file_modified_time(conn: Connection, tmp_path: Path) -> None:
+    src = write(tmp_path / "Students.csv", STUDENTS)
+    exported = datetime(2026, 3, 1, 6, 30, tzinfo=UTC)
+    os.utime(src, (exported.timestamp(), exported.timestamp()))
+
+    load_file(conn, src, "cases")
+
+    assert scalar(conn, "select source_modified_at from bronze.load_log") == exported
+
+
+def test_load_id_is_indexed(conn: Connection, tmp_path: Path) -> None:
+    load_file(conn, write(tmp_path / "Student.csv", STUDENTS), "cases")
+
+    indexdef = scalar(conn, "select indexdef from pg_indexes where tablename = 'cases__student'")
+
+    assert "(_load_id)" in str(indexdef)
+
+
+def test_setup_sql_can_run_twice(conn: Connection) -> None:
+    init_schema(conn)
+
+    assert scalar(conn, "select count(*) from bronze.load_log") == 0

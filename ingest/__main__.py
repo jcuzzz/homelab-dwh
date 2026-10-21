@@ -6,7 +6,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from ingest.db import connect, init_schema
-from ingest.load import load_file, table_name
+from ingest.load import load_file
 
 
 def _require_env(name: str) -> str:
@@ -34,9 +34,8 @@ def main() -> None:
             init_schema(conn)
             print("bronze schema ready")
             return
-        rows = load_file(conn, args.target, args.source)
-        table = table_name(args.source, args.target)
-        print(f"loaded {args.target.name} -> bronze.{table} ({rows} rows)")
+        r = load_file(conn, args.target, args.source)
+        print(f"loaded {r.file.name} -> bronze.{r.table} ({r.rows} rows, load {r.load_id})")
 
 
 if __name__ == "__main__":
