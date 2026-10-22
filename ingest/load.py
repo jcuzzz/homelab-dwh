@@ -1,4 +1,5 @@
 import csv
+import hashlib
 import re
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -32,7 +33,7 @@ class CsvReader(Protocol):
 class LoadResult:
     file: Path
     table: str
-    status: Literal["loaded", "failed"]
+    status: Literal["loaded", "skipped", "failed"]
     load_id: int | None = None
     rows: int = 0
     error: str | None = None
@@ -126,20 +127,37 @@ def copy_rows(
     return count
 
 
-def load_file(conn: Connection, path: Path, source: str) -> LoadResult:
+def _latest_load(conn: Connection, table: str) -> tuple[int, str] | None:
+    row = conn.execute(
+        "select load_id, file_sha256 from bronze.load_log"
+        " where table_name = %s order by load_id desc limit 1",
+        (table,),
+    ).fetchone()
+    return None if row is None else (int(str(row[0])), str(row[1]))
+
+
+def load_file(conn: Connection, path: Path, source: str, archive_dir: Path) -> LoadResult:
     if normalise_identifier(source) != source:
         raise LoadError(f"source {source!r} must be lowercase letters, digits and underscores")
     table = table_name(source, path)
-    modified_at = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
+    modified_before = path.stat().st_mtime
+    archived, sha = archive_file(path, archive_dir, source)
+    if path.stat().st_mtime != modified_before:
+        raise LoadError("file changed while being copiedl run the load again")
+    modified_at = datetime.fromtimestamp(modified_before, tz=UTC)
     with open_csv(path) as f:
         header, reader = read_csv(f)
         columns = normalise_columns(header)
         with conn.transaction():
+            latest = _latest_load(conn, table)
+            if latest is not None and latest[1] == sha:
+                return LoadResult(path, table, "skipped", load_id=latest[0])
             ensure_table(conn, table, columns)
             inserted = conn.execute(
-                "insert into bronze.load_log (source, table_name, source_file, source_modified_at)"
-                " values (%s, %s, %s, %s) returning load_id",
-                (source, table, str(path), modified_at),
+                "insert into bronze.load_log (source, table_name, source_file,"
+                " source_modified_at, archive_file, file_sha256)"
+                " values (%s, %s, %s, %s, %s, %s) returning load_id",
+                (source, table, str(path), modified_at, str(archived), sha),
             ).fetchone()
             if inserted is None:
                 raise LoadError("load log insert returned no id")
@@ -157,11 +175,28 @@ def csv_files(target: Path) -> list[Path]:
     return sorted(p for p in target.iterdir() if p.is_file() and p.suffix.lower() == ".csv")
 
 
-def load_path(conn: Connection, target: Path, source: str) -> list[LoadResult]:
+def load_path(conn: Connection, target: Path, source: str, archive_dir: Path) -> list[LoadResult]:
     results: list[LoadResult] = []
     for path in csv_files(target):
         try:
-            results.append(load_file(conn, path, source))
+            results.append(load_file(conn, path, source, archive_dir))
         except (LoadError, OSError) as exc:
             results.append(LoadResult(path, "", "failed", error=str(exc)))
     return results
+
+
+def archive_file(src: Path, archive_dir: Path, source: str) -> tuple[Path, str]:
+    dest_dir = archive_dir / source
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    partial = dest_dir / f".{src.name}.partial"
+    digest = hashlib.sha256()
+    with src.open("rb") as fin, partial.open("wb") as fout:
+        while chunk := fin.read(1 << 20):
+            digest.update(chunk)
+            fout.write(chunk)
+    sha = digest.hexdigest()
+    final = dest_dir / f"{sha}{src.suffix.lower()}"
+    if final.exists():
+        partial.unlink()
+    else:
+        partial.replace(final)

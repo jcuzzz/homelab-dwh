@@ -36,13 +36,16 @@ def main() -> int:
             init_schema(conn)
             print("bronze schema ready")
             return 0
-        results = load_path(conn, args.target, args.source)
+        archive_dir = Path(_require_env("ARCHIVE_DIR"))
+        results = load_path(conn, args.target, args.source, archive_dir)
     if not results:
         print(f"no CSV files found at {args.target}")
         return 1
     for r in results:
         if r.status == "loaded":
             print(f"loaded   {r.file.name} -> bronze.{r.table} ({r.rows} rows, load {r.load_id})")
+        elif r.status == "skipped":
+            print(f"skipped   {r.file.name}: unchanged since load {r.load_id}")
         else:
             print(f"FAILED   {r.file.name}: {r.error}")
     return 1 if any(r.status == "failed" for r in results) else 0
