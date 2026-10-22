@@ -89,7 +89,16 @@ def _existing_columns(conn: Connection, table: str) -> list[str]:
 
 
 def ensure_table(conn: Connection, table: str, columns: list[str]) -> None:
-    if _existing_columns(conn, table):
+    existing = _existing_columns(conn, table)
+    if existing:
+        current = set(existing) - set(META_COLUMNS)
+        incoming = set(columns)
+        if current != incoming:
+            added = sorted(incoming - current) or "none"
+            removed = sorted(current - incoming) or "none"
+            raise LoadError(
+                f"headers no longer match bronze.{table}: added {added}, removed {removed}"
+            )
         return
     column_defs = sql.SQL(", ").join(
         sql.SQL("{} text not null").format(sql.Identifier(c)) for c in columns
@@ -143,7 +152,7 @@ def load_file(conn: Connection, path: Path, source: str, archive_dir: Path) -> L
     modified_before = path.stat().st_mtime
     archived, sha = archive_file(path, archive_dir, source)
     if path.stat().st_mtime != modified_before:
-        raise LoadError("file changed while being copiedl run the load again")
+        raise LoadError("file changed while being copied; run the load again")
     modified_at = datetime.fromtimestamp(modified_before, tz=UTC)
     with open_csv(path) as f:
         header, reader = read_csv(f)

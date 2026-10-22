@@ -147,3 +147,27 @@ def test_folder_load_continues_past_a_bad_file(conn: Connection, tmp_path: Path)
         ("Bad.csv", "failed"),
         ("Student.csv", "loaded"),
     ]
+
+
+def test_header_change_fails_without_loading(conn: Connection, tmp_path: Path) -> None:
+    archive = tmp_path / "archive"
+    src = write(tmp_path / "Student.csv", STUDENTS)
+    load_file(conn, src, "cases", archive)
+    write(src, "Surname,Student Key,Home Group\nS005,Eden,10\n")
+
+    with pytest.raises(LoadError, match=r"added \['home_group'\], removed \['year_level'\]"):
+        load_file(conn, src, "cases", archive)
+
+    assert scalar(conn, "select count(*) from bronze.load_log") == 1
+
+
+def test_recorded_columns_still_load(conn: Connection, tmp_path: Path) -> None:
+    archive = tmp_path / "archive"
+    src = write(tmp_path / "Student.csv", STUDENTS)
+    load_file(conn, src, "cases", archive)
+    write(src, "Surname,Student Key,Year Level\nDell,S004,10\n")
+
+    load_file(conn, src, "cases", archive)
+
+    surname = scalar(conn, "select surname from bronze.cases__student where student_key = 'S004'")
+    assert surname == "Dell"
