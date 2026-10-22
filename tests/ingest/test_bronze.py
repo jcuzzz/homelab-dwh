@@ -25,7 +25,7 @@ def scalar(conn: Connection, query: str) -> object:
 def test_load_mirrors_csv_as_text(conn: Connection, tmp_path: Path) -> None:
     src = write(tmp_path / "Student.csv", STUDENTS)
 
-    result = load_file(conn, src, "cases")
+    result = load_file(conn, src, "cases", tmp_path / "archive")
 
     assert (result.table, result.rows) == ("cases__student", 2)
     stored = conn.execute(
@@ -40,26 +40,53 @@ def test_load_mirrors_csv_as_text(conn: Connection, tmp_path: Path) -> None:
     assert types == [("text",)]
 
 
-def test_second_load_appends(conn: Connection, tmp_path: Path) -> None:
+def test_identical_file_is_skipped(conn: Connection, tmp_path: Path) -> None:
     src = write(tmp_path / "Student.csv", STUDENTS)
+    first = load_file(conn, src, "cases", tmp_path / "archive")
 
-    load_file(conn, src, "cases")
-    load_file(conn, src, "cases")
+    second = load_file(conn, src, "cases", tmp_path / "archive")
 
-    assert scalar(conn, "select count(*) from bronze.cases__student") == 4
+    assert (second.status, second.load_id) == ("skipped", first.load_id)
+    assert scalar(conn, "select count(*), from bronze.cases__student") == 2
+
+
+def test_changed_file_appends_new_load(conn: Connection, tmp_path: Path) -> None:
+    archive = tmp_path / "archive"
+    src = write(tmp_path / "Student.csv", STUDENTS)
+    load_file(conn, src, "cases", archive)
+    write(src, STUDENTS + "S003,Cove,09\n")
+
+    load_file(conn, src, "cases", archive)
+
+    assert scalar(conn, "select count(*) from bronze.cases__student") == 5
+    assert len(list((archive / "cases").glob("*.csv"))) == 2
+
+
+def test_reverted_file_is_loaded_again(conn: Connection, tmp_path: Path) -> None:
+    archive = tmp_path / "archive"
+    src = write(tmp_path / "Student.csv", STUDENTS)
+    load_file(conn, src, "cases", archive)
+    write(src, STUDENTS + "S003,Cove,09\n")
+    load_file(conn, src, "cases", archive)
+    write(src, STUDENTS)
+
+    result = load_file(conn, src, "cases", archive)
+
+    assert result.status == "loaded"
+    assert len(list((archive / "cases").glob("*.csv"))) == 2
 
 
 def test_bad_source_name_is_rejected(conn: Connection, tmp_path: Path) -> None:
     src = write(tmp_path / "Student.csv", STUDENTS)
 
     with pytest.raises(LoadError, match="source"):
-        load_file(conn, src, "Cases!")
+        load_file(conn, src, "Cases!", tmp_path / "archive")
 
 
 def test_rows_record_load_id_source_line(conn: Connection, tmp_path: Path) -> None:
     src = write(tmp_path / "Student.csv", STUDENTS)
 
-    result = load_file(conn, src, "cases")
+    result = load_file(conn, src, "cases", tmp_path / "archive")
 
     lineage = conn.execute(
         b"select _load_id, _source_line from bronze.cases__student order by 2"
@@ -73,13 +100,13 @@ def test_export_time_is_file_modified_time(conn: Connection, tmp_path: Path) -> 
     exported = datetime(2026, 3, 1, 6, 30, tzinfo=UTC)
     os.utime(src, (exported.timestamp(), exported.timestamp()))
 
-    load_file(conn, src, "cases")
+    load_file(conn, src, "cases", tmp_path / "archive")
 
     assert scalar(conn, "select source_modified_at from bronze.load_log") == exported
 
 
 def test_load_id_is_indexed(conn: Connection, tmp_path: Path) -> None:
-    load_file(conn, write(tmp_path / "Student.csv", STUDENTS), "cases")
+    load_file(conn, write(tmp_path / "Student.csv", STUDENTS), "cases", tmp_path / "archive")
 
     indexdef = scalar(conn, "select indexdef from pg_indexes where tablename = 'cases__student'")
 
@@ -96,7 +123,7 @@ def test_ragged_row_rolls_back_whole_file(conn: Connection, tmp_path: Path) -> N
     src = write(tmp_path / "Student.csv", STUDENTS + "S003,Cove\n")
 
     with pytest.raises(LoadError, match="line 4: expected 3 fields, found 2"):
-        load_file(conn, src, "cases")
+        load_file(conn, src, "cases", tmp_path / "archive")
 
     assert scalar(conn, "select count(*) from bronze.load_log") == 0
     assert scalar(conn, "select to_regclass('bronze.cases__student') is null") is True
@@ -105,7 +132,7 @@ def test_ragged_row_rolls_back_whole_file(conn: Connection, tmp_path: Path) -> N
 def test_blank_lines_are_ignored(conn: Connection, tmp_path: Path) -> None:
     src = write(tmp_path / "Students.csv", STUDENTS + "\n")
 
-    assert load_file(conn, src, "cases").rows == 2
+    assert load_file(conn, src, "cases", tmp_path / "archive").rows == 2
 
 
 def test_folder_load_continues_past_a_bad_file(conn: Connection, tmp_path: Path) -> None:
@@ -114,7 +141,7 @@ def test_folder_load_continues_past_a_bad_file(conn: Connection, tmp_path: Path)
     write(share / "Student.csv", STUDENTS)
     write(share / "notes.txt", "ignored")
 
-    results = load_path(conn, share, "cases")
+    results = load_path(conn, share, "cases", tmp_path / "archive")
 
     assert [(r.file.name, r.status) for r in results] == [
         ("Bad.csv", "failed"),

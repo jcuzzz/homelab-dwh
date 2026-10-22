@@ -155,7 +155,7 @@ def load_file(conn: Connection, path: Path, source: str, archive_dir: Path) -> L
             ensure_table(conn, table, columns)
             inserted = conn.execute(
                 "insert into bronze.load_log (source, table_name, source_file,"
-                " source_modified_at, archive_file, file_sha256)"
+                " source_modified_at, archived_file, file_sha256)"
                 " values (%s, %s, %s, %s, %s, %s) returning load_id",
                 (source, table, str(path), modified_at, str(archived), sha),
             ).fetchone()
@@ -200,3 +200,4 @@ def archive_file(src: Path, archive_dir: Path, source: str) -> tuple[Path, str]:
         partial.unlink()
     else:
         partial.replace(final)
+    return final, sha
