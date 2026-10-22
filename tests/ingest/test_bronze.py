@@ -47,7 +47,7 @@ def test_identical_file_is_skipped(conn: Connection, tmp_path: Path) -> None:
     second = load_file(conn, src, "cases", tmp_path / "archive")
 
     assert (second.status, second.load_id) == ("skipped", first.load_id)
-    assert scalar(conn, "select count(*), from bronze.cases__student") == 2
+    assert scalar(conn, "select count(*) from bronze.cases__student") == 2
 
 
 def test_changed_file_appends_new_load(conn: Connection, tmp_path: Path) -> None:
