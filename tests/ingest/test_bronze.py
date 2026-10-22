@@ -2,10 +2,11 @@ import os
 from datetime import UTC, datetime
 from pathlib import Path
 
+import psycopg
 import pytest
 
 from ingest.db import Connection, init_schema
-from ingest.load import LoadError, load_file, load_path
+from ingest.load import LoadError, _safe_db_error, load_file, load_path
 
 STUDENTS = "Student Key,Surname,Year Level\nS001,Avery,07\nS002,Brook,\n"
 
@@ -171,3 +172,34 @@ def test_recorded_columns_still_load(conn: Connection, tmp_path: Path) -> None:
 
     surname = scalar(conn, "select surname from bronze.cases__student where student_key = 'S004'")
     assert surname == "Dell"
+
+
+def test_wrong_encoding_is_reported(conn: Connection, tmp_path: Path) -> None:
+    archive = tmp_path / "archive"
+    src = tmp_path / "Student.csv"
+    src.write_bytes("Student Key,Surname\nS007,Grégoire\n".encode("cp1252"))
+
+    with pytest.raises(LoadError, match="cp1252"):
+        load_file(conn, src, "cases", archive)
+
+    assert load_file(conn, src, "cases", archive, encoding="cp1252").status == "loaded"
+
+
+def test_safe_db_error_hides_values_the_server_quotes(conn: Connection) -> None:
+    secret = "Zanzibar-Quokka"
+    with pytest.raises(psycopg.Error) as caught:
+        conn.execute("select %s::integer", (secret,))
+
+    assert secret in str(caught.value)
+    assert secret not in _safe_db_error(caught.value)
+
+
+def test_failed_load_does_not_echo_row_values(conn: Connection, tmp_path: Path) -> None:
+    secret = "Zanzibar-Quokka"
+    write(tmp_path / "share" / "Students.csv", f"Student Key,Surname\nS008,{secret},x00\n")
+
+    [result] = load_path(conn, tmp_path / "share", "cases", tmp_path / "archive")
+
+    assert result.status == "failed"
+    assert result.error is not None
+    assert secret not in result.error

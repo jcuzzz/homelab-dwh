@@ -22,6 +22,7 @@ def _parse_args() -> argparse.Namespace:
     sub.add_parser("init-db", help="create the bronze schema (safe to repeat)")
     load = sub.add_parser("load", help="append a CSV export to its bronze tables")
     load.add_argument("--source", required=True, help="source system prefix, e.g. cases")
+    load.add_argument("--encoding", default="utf-8-sig", help="e.g. cp1252 for older exports")
     load.add_argument("target", type=Path, help="the CSV file or a folder of CSV files")
     return parser.parse_args()
 
@@ -37,7 +38,7 @@ def main() -> int:
             print("bronze schema ready")
             return 0
         archive_dir = Path(_require_env("ARCHIVE_DIR"))
-        results = load_path(conn, args.target, args.source, archive_dir)
+        results = load_path(conn, args.target, args.source, archive_dir, args.encoding)
     if not results:
         print(f"no CSV files found at {args.target}")
         return 1

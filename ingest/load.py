@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, Protocol, TextIO
 
+import psycopg
 from psycopg import sql
 
 from ingest.db import Connection
@@ -145,7 +146,9 @@ def _latest_load(conn: Connection, table: str) -> tuple[int, str] | None:
     return None if row is None else (int(str(row[0])), str(row[1]))
 
 
-def load_file(conn: Connection, path: Path, source: str, archive_dir: Path) -> LoadResult:
+def load_file(
+    conn: Connection, path: Path, source: str, archive_dir: Path, encoding: str = "utf-8-sig"
+) -> LoadResult:
     if normalise_identifier(source) != source:
         raise LoadError(f"source {source!r} must be lowercase letters, digits and underscores")
     table = table_name(source, path)
@@ -154,27 +157,32 @@ def load_file(conn: Connection, path: Path, source: str, archive_dir: Path) -> L
     if path.stat().st_mtime != modified_before:
         raise LoadError("file changed while being copied; run the load again")
     modified_at = datetime.fromtimestamp(modified_before, tz=UTC)
-    with open_csv(path) as f:
-        header, reader = read_csv(f)
-        columns = normalise_columns(header)
-        with conn.transaction():
-            latest = _latest_load(conn, table)
-            if latest is not None and latest[1] == sha:
-                return LoadResult(path, table, "skipped", load_id=latest[0])
-            ensure_table(conn, table, columns)
-            inserted = conn.execute(
-                "insert into bronze.load_log (source, table_name, source_file,"
-                " source_modified_at, archived_file, file_sha256)"
-                " values (%s, %s, %s, %s, %s, %s) returning load_id",
-                (source, table, str(path), modified_at, str(archived), sha),
-            ).fetchone()
-            if inserted is None:
-                raise LoadError("load log insert returned no id")
-            load_id = int(str(inserted[0]))
-            rows = copy_rows(conn, table, columns, reader, load_id)
-            conn.execute(
-                "update bronze.load_log set row_count = %s where load_id = %s", (rows, load_id)
-            )
+    try:
+        with open_csv(archived, encoding) as f:
+            header, reader = read_csv(f)
+            columns = normalise_columns(header)
+            with conn.transaction():
+                latest = _latest_load(conn, table)
+                if latest is not None and latest[1] == sha:
+                    return LoadResult(path, table, "skipped", load_id=latest[0])
+                ensure_table(conn, table, columns)
+                inserted = conn.execute(
+                    "insert into bronze.load_log (source, table_name, source_file,"
+                    " source_modified_at, archived_file, file_sha256)"
+                    " values (%s, %s, %s, %s, %s, %s) returning load_id",
+                    (source, table, str(path), modified_at, str(archived), sha),
+                ).fetchone()
+                if inserted is None:
+                    raise LoadError("load log insert returned no id")
+                load_id = int(str(inserted[0]))
+                rows = copy_rows(conn, table, columns, reader, load_id)
+                conn.execute(
+                    "update bronze.load_log set row_count = %s where load_id = %s", (rows, load_id)
+                )
+    except UnicodeDecodeError as exc:
+        raise LoadError(f"not valid {encoding} ({exc.reason}); try --encoding cp1252") from exc
+    except csv.Error as exc:
+        raise LoadError(f"malformed CSV: {exc}") from exc
     return LoadResult(path, table, "loaded", load_id=load_id, rows=rows)
 
 
@@ -184,13 +192,17 @@ def csv_files(target: Path) -> list[Path]:
     return sorted(p for p in target.iterdir() if p.is_file() and p.suffix.lower() == ".csv")
 
 
-def load_path(conn: Connection, target: Path, source: str, archive_dir: Path) -> list[LoadResult]:
+def load_path(
+    conn: Connection, target: Path, source: str, archive_dir: Path, encoding: str = "utf-8-sig"
+) -> list[LoadResult]:
     results: list[LoadResult] = []
     for path in csv_files(target):
         try:
-            results.append(load_file(conn, path, source, archive_dir))
+            results.append(load_file(conn, path, source, archive_dir, encoding))
         except (LoadError, OSError) as exc:
             results.append(LoadResult(path, "", "failed", error=str(exc)))
+        except psycopg.Error as exc:
+            results.append(LoadResult(path, "", "failed", error=_safe_db_error(exc)))
     return results
 
 
@@ -210,3 +222,8 @@ def archive_file(src: Path, archive_dir: Path, source: str) -> tuple[Path, str]:
     else:
         partial.replace(final)
     return final, sha
+
+
+def _safe_db_error(exc: psycopg.Error) -> str:
+    """Server messages can quote row values; keep only the error code and class."""
+    return f"database error {exc.sqlstate or 'unknown'}: {type(exc).__name__}"
