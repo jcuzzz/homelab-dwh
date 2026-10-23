@@ -60,8 +60,3 @@ tools/check.sh   # ruff format + lint, strict mypy, real-data guard, pytest
 Tests run against a real PostgreSQL database (`TEST_DATABASE_URL`), and CI runs the same
 script against Postgres 17 on every push. Only invented data is ever committed: CSVs and
 dumps are git-ignored, and `tools/check_no_real_data.py` fails the build if one slips in.
-
-## In progress
-
-- [ ] Encoding option and error output free of row values
-- [ ] Decision record for the bronze storage pattern

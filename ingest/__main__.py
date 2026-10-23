@@ -46,7 +46,7 @@ def main() -> int:
         if r.status == "loaded":
             print(f"loaded   {r.file.name} -> bronze.{r.table} ({r.rows} rows, load {r.load_id})")
         elif r.status == "skipped":
-            print(f"skipped   {r.file.name}: unchanged since load {r.load_id}")
+            print(f"skipped   {r.file.name}: unchanged since last load {r.load_id}")
         else:
             print(f"FAILED   {r.file.name}: {r.error}")
     return 1 if any(r.status == "failed" for r in results) else 0
